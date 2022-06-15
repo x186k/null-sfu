@@ -6,14 +6,15 @@ video.muted = false
 video.width = 640
 video.height = 480
 video.visible = true
-//video.poster = "https://peach.blender.org/wp-content/uploads/title_anouncement.jpg?x11217"
+video.poster = "https://peach.blender.org/wp-content/uploads/title_anouncement.jpg?x11217"
 document.documentElement.appendChild(video)
 gum = await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
 //tx.sender.setStreams(x)
 // a.addTransceiver(x.getVideoTracks()[0], { 'direction': 'sendonly' })
 a = new RTCPeerConnection()
-a.addTrack(gum.getVideoTracks()[0])
-a.ontrack = (e) => { console.log(11, e); video.srcObject = new MediaStream([e.track]) }
+a.addTrack(gum.getVideoTracks()[0],gum)
+//a.ontrack = (e) => { console.log(11, e); video.srcObject = new MediaStream([e.track]) }
+a.ontrack = (e) => { console.log(11, e); video.srcObject = e.streams[0] }
 a.onconnectionstatechange = () => console.log("a state:" + a.connectionState)
 await a.setLocalDescription()
 await new Promise((r) => setTimeout(r, 0)); // ice canidate settling
