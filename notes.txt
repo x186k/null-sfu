@@ -1,0 +1,5 @@
+
+
+echo -n 'a-setup:actpass' | http -b POST localhost:3000/foo
+
+echo -n 'b-setup:actpass' | http -b POST localhost:3000/foo
