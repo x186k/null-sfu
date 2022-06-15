@@ -15,6 +15,7 @@ use axum::{
     handler::Handler,
     http::StatusCode,
     response::IntoResponse,
+    response::Response,
     routing::{delete, get, post},
     Router,
 };
@@ -23,7 +24,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     net::SocketAddr,
-    sync::{mpsc::SyncSender, Arc, RwLock},
+    sync::{Arc, RwLock},
     time::Duration,
 };
 use tower::{BoxError, ServiceBuilder};
@@ -31,8 +32,9 @@ use tower::{BoxError, ServiceBuilder};
 use tower_http::{auth::RequireAuthorizationLayer, compression::CompressionLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use std::sync::mpsc::sync_channel;
+//use std::sync::mpsc::sync_channel;
 //use oneshot::{Receiver, Sender};
+use tokio::sync::oneshot::{self, Sender};
 
 #[tokio::main]
 async fn main() {
@@ -84,7 +86,7 @@ struct State {
 //#[derive(Default)]
 struct StateVal {
     first_offer: String,
-    sync_sender: SyncSender<String>,
+    tx: Sender<String>,
     // sender: Mutex<Sender<Bytes>>,
 }
 
@@ -117,7 +119,7 @@ async fn kv_set(
     Path(key): Path<String>,
     ContentLengthLimit(sdp): ContentLengthLimit<String, { 1024 * 5_000 }>, // ~5mb
     Extension(state): Extension<SharedState>,
-) -> Result<String, StatusCode> {
+) -> Result<String, AppError> {
     if let Some(x) = state.write().unwrap().db.remove(&key) {
         //state.write().unwrap().db.remove(&key);
 
@@ -127,28 +129,29 @@ async fn kv_set(
         let a_sdp = x.first_offer.clone().replace("a=setup:actpass", "a=setup:active");
         let b_sdp = sdp.replace("a=setup:actpass", "a=setup:passive");
 
-        match x.sync_sender.try_send(b_sdp) {
+        match x.tx.send(b_sdp) {
             Ok(()) => (),
-            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+            Err(_) => return Err(AppError::MyErr("xsend failed".to_string())),
         }
 
-        return Ok(a_sdp);
+        return Err(AppError::Sdp201(a_sdp));
     }
 
-    let (sync_sender, receiver) = sync_channel(1);
+    //let (sync_sender, receiver) = sync_channel(1);
+    let (tx, rx) = oneshot::channel();
 
     //let x: StateVal = Default::default();
     let x: StateVal = StateVal {
         first_offer: sdp,
-        sync_sender: sync_sender,
+        tx: tx,
     };
 
     state.write().unwrap().db.insert(key, x);
 
-    let msg;
-    msg = receiver.recv().unwrap();
-    println!("message {msg} received");
-    return Ok(msg);
+    match rx.await {
+        Ok(sdp) => return Err(AppError::Sdp201(sdp)),
+        Err(_) => return Err(AppError::MyErr("rx.await failed".to_string())),
+    }
 }
 
 async fn list_keys(Extension(state): Extension<SharedState>) -> String {
@@ -189,4 +192,50 @@ async fn handle_error(error: BoxError) -> impl IntoResponse {
         StatusCode::INTERNAL_SERVER_ERROR,
         Cow::from(format!("Unhandled internal error: {}", error)),
     )
+}
+
+enum AppError {
+    /// Something went wrong when calling the user repo.
+    //WebRTCErr(webrtc::Error),
+    MyErr(String),
+    Sdp201(String),
+}
+
+/// This makes it possible to use `?` to automatically convert a `UserRepoError`
+/// into an `AppError`.
+// impl From<webrtc::Error> for AppError {
+//     fn from(inner: webrtc::Error) -> Self {
+//         AppError::WebRTCErr(inner)
+//     }
+// }
+
+// NOT Allowed, webrtc::Error not defined in current crate
+// impl IntoResponse for webrtc::Error {
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        // let (status, error_message) = match self {
+        //     AppError::UserRepo(webrtc::Error) => {
+        //         (StatusCode::NOT_FOUND, "User not found")
+        //     }
+        //     AppError::UserRepo(UserRepoError::InvalidUsername) => {
+        //         (StatusCode::UNPROCESSABLE_ENTITY, "Invalid username")
+        //     }
+        // };
+
+        let (status, body) = match self {
+            //AppError::WebRTCErr(xxx) => (StatusCode::NOT_FOUND, xxx.to_string()),
+            AppError::MyErr(xxx) => (StatusCode::NOT_FOUND, xxx),
+            AppError::Sdp201(xxx) => (StatusCode::CREATED, xxx),
+        };
+
+        // let (status, error_message) = (StatusCode::NOT_FOUND, "webrtc error");
+
+        // // let body = Json(json!({
+        // //     "error": error_message,
+        // // }));
+        // let body = error_message;
+
+        (status, body).into_response()
+    }
 }
